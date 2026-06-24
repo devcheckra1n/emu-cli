@@ -1,0 +1,14 @@
+node_modules/
+*.log
+.DS_Store
+
+# Bun — commit bun.lock for reproducible installs; ignore the legacy binary lock
+bun.lockb
+
+# Compiled standalone binary
+/emu
+/emu-cli
+
+# Local scratch
+/tmp/
+*.torrent

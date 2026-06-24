@@ -230,5 +230,3 @@ any rights holder.
   supported but less battle-tested.
 
 ---
-
-Built with [Claude Code](https://claude.com/claude-code) (Claude Opus 4.8).

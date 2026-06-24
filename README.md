@@ -228,5 +228,3 @@ any rights holder.
   instead the **smart cache** makes every replay instant. See ARCHITECTURE.md.
 - Primarily developed and tested on macOS Apple Silicon; Linux (x64/arm64) is
   supported but less battle-tested.
-
----

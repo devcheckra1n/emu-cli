@@ -118,6 +118,13 @@ on-disk cache (`downloader/cache.ts`).
 - Keep / Delete / Move-to-library at the post-play prompt give explicit control;
   Move drops the manifest entry without deleting (the file relocated).
 
+**Permanent library (`downloader/library.ts`).** Separate from the evictable
+cache, games can be kept forever under `libraryPath/<platform>/` and are **never
+evicted**. With `keepInLibrary` (config, the `[L]` toggle, or `--keep` /
+`--library <dir>`), a played game is moved there. On launch the library is
+checked *first*, so a kept game replays instantly and never re-downloads (works
+offline). Arcade BIOS romsets are copied beside the game in the library too.
+
 ## Index + search
 
 ```

@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import { rm, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join, basename } from "node:path";
+import { join, dirname } from "node:path";
 
 import type { LoadedConfig } from "../config.ts";
 import { cacheDir } from "../config.ts";
@@ -31,6 +31,7 @@ import {
   cacheKey,
   cacheStats,
 } from "../downloader/cache.ts";
+import { findInLibrary, saveToLibrary } from "../downloader/library.ts";
 
 import { SearchBar } from "./SearchBar.tsx";
 import { GameList } from "./GameList.tsx";
@@ -106,7 +107,7 @@ export function App({ config, initialPlatform, initialQuery }: Props) {
   });
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
-  const [keep, setKeep] = useState(config.raw.defaultKeep);
+  const [keep, setKeep] = useState(config.raw.keepInLibrary);
   const [emuInfo, setEmuInfo] = useState<{ ok: boolean; text: string }>({ ok: false, text: "" });
   const [cacheInfo, setCacheInfo] = useState<{ count: number; totalBytes: number }>({
     count: 0,
@@ -167,10 +168,13 @@ export function App({ config, initialPlatform, initialQuery }: Props) {
 
   // Arcade games (e.g. Neo Geo) need their shared BIOS romset alongside them.
   const ensureArcadeBios = useCallback(
-    async (aria: string | null, downloadDir: string): Promise<string | null> => {
+    async (aria: string | null, besideDir: string): Promise<string | null> => {
       const bios = platform.biosRomsets;
       if (!bios || bios.length === 0) return null;
+      const downloadDir = join(config.tempPath, platform.key);
       for (const biosName of bios) {
+        const besidePath = join(besideDir, biosName);
+        if (existsSync(besidePath)) continue; // already next to the game
         const biosRom: RomEntry = {
           name: biosName,
           title: biosName,
@@ -185,25 +189,31 @@ export function App({ config, initialPlatform, initialQuery }: Props) {
         } catch {
           continue; // BIOS not in this torrent — let the emulator report it if needed.
         }
-        const biosPath = downloadedFilePath(downloadDir, target.file);
-        if (existsSync(biosPath)) continue;
-        if (!aria) {
-          return `Arcade BIOS "${biosName}" is required but aria2c isn't installed (brew install aria2).`;
+        const cachedBios = downloadedFilePath(downloadDir, target.file);
+        if (!existsSync(cachedBios)) {
+          if (!aria) {
+            return `Arcade BIOS "${biosName}" is required but aria2c isn't installed (${ARIA2C_INSTALL_HINT}).`;
+          }
+          setStatus(`Fetching arcade BIOS ${biosName}…`);
+          setProgress({ ratio: 0, completedBytes: 0, totalBytes: target.file.length, downloadSpeed: 0, connections: 0 });
+          setMode("downloading");
+          const handle = startDownload({
+            aria2c: aria,
+            torrentPath: cachedTorrentPath(target.torrentName),
+            file: target.file,
+            downloadDir,
+            config: config.raw,
+            onProgress: setProgress,
+          });
+          downloadHandle.current = handle;
+          await handle.completed;
+          downloadHandle.current = null;
         }
-        setStatus(`Fetching arcade BIOS ${biosName}…`);
-        setProgress({ ratio: 0, completedBytes: 0, totalBytes: target.file.length, downloadSpeed: 0, connections: 0 });
-        setMode("downloading");
-        const handle = startDownload({
-          aria2c: aria,
-          torrentPath: cachedTorrentPath(target.torrentName),
-          file: target.file,
-          downloadDir,
-          config: config.raw,
-          onProgress: setProgress,
-        });
-        downloadHandle.current = handle;
-        await handle.completed;
-        downloadHandle.current = null;
+        // Ensure the BIOS sits beside the launch file (e.g. when playing from library).
+        if (cachedBios !== besidePath) {
+          await mkdir(besideDir, { recursive: true });
+          await Bun.write(besidePath, Bun.file(cachedBios));
+        }
       }
       return null;
     },
@@ -227,12 +237,41 @@ export function App({ config, initialPlatform, initialQuery }: Props) {
       const aria = findAria2c(config.raw);
       const downloadDir = join(config.tempPath, platform.key);
 
+      // Permanent library hit: launch the kept copy, never re-download.
+      const libHit = findInLibrary(config.libraryPath, platform.key, rom.name);
+      if (libHit) {
+        const prepared = await prepareRom(libHit, det.emulator.spec, platform.archive, detectExtractTools());
+        const biosErr = await ensureArcadeBios(aria, dirname(prepared.launchPath));
+        if (biosErr) {
+          setError(biosErr);
+          setMode("error");
+          return;
+        }
+        current.current = { rom, downloadDir, downloadedFile: libHit, extractedDir: prepared.extractedDir };
+        setMode("launching");
+        setStatus(`Launching ${rom.title} (library) in ${det.emulator.spec.label}…`);
+        const r = await launchEmulator(det.emulator, platform, prepared.launchPath, config.raw);
+        if (prepared.extractedDir) await rm(prepared.extractedDir, { recursive: true, force: true }).catch(() => {});
+        current.current = null;
+        if (r.code !== 0) {
+          setError(
+            `${det.emulator.spec.label} exited with code ${r.code}.` +
+              (r.stderrTail.length ? `\n${r.stderrTail.join("\n")}` : ""),
+          );
+          setMode("error");
+        } else {
+          setStatus(`Played from library: ${rom.title}`);
+          setMode("browse");
+        }
+        return;
+      }
+
       // Instant replay: already-cached ROMs skip downloading the game itself.
       if (config.raw.cacheEnabled) {
         const cached = await findCached(platform.key, rom.name);
         if (cached) {
           await touch(platform.key, rom.name);
-          const biosErr = await ensureArcadeBios(aria, downloadDir);
+          const biosErr = await ensureArcadeBios(aria, dirname(cached.launchPath));
           if (biosErr) {
             setError(biosErr);
             setMode("error");
@@ -289,6 +328,36 @@ export function App({ config, initialPlatform, initialQuery }: Props) {
       await handle.completed;
       downloadHandle.current = null;
 
+      // Permanent keep: move the download into the library and play from there.
+      if (keep) {
+        setStatus("Saving to library…");
+        const libFile = await saveToLibrary(config.libraryPath, platform.key, file);
+        const prep = await prepareRom(libFile, det.emulator.spec, platform.archive, detectExtractTools());
+        const biosErr = await ensureArcadeBios(aria, dirname(prep.launchPath));
+        if (biosErr) {
+          setError(biosErr);
+          setMode("error");
+          return;
+        }
+        current.current = { rom, downloadDir, downloadedFile: libFile, extractedDir: prep.extractedDir };
+        setMode("launching");
+        setStatus(`Launching ${rom.title} (library) in ${det.emulator.spec.label}…`);
+        const r = await launchEmulator(det.emulator, platform, prep.launchPath, config.raw);
+        if (prep.extractedDir) await rm(prep.extractedDir, { recursive: true, force: true }).catch(() => {});
+        current.current = null;
+        if (r.code !== 0) {
+          setError(
+            `${det.emulator.spec.label} exited with code ${r.code}.` +
+              (r.stderrTail.length ? `\n${r.stderrTail.join("\n")}` : ""),
+          );
+          setMode("error");
+        } else {
+          setStatus(`Saved permanently to ${libFile}`);
+          setMode("browse");
+        }
+        return;
+      }
+
       setStatus("Preparing ROM…");
       const tools = detectExtractTools();
       const prepared = await prepareRom(file, det.emulator.spec, platform.archive, tools);
@@ -315,7 +384,7 @@ export function App({ config, initialPlatform, initialQuery }: Props) {
         }
       }
 
-      const biosErr = await ensureArcadeBios(aria, downloadDir);
+      const biosErr = await ensureArcadeBios(aria, dirname(prepared.launchPath));
       if (biosErr) {
         setError(biosErr);
         setMode("error");
@@ -344,7 +413,7 @@ export function App({ config, initialPlatform, initialQuery }: Props) {
         setMode("error");
       }
     }
-  }, [results, selected, platform, config, refreshCacheInfo, ensureArcadeBios]);
+  }, [results, selected, platform, config, keep, refreshCacheInfo, ensureArcadeBios]);
 
   const postAction = useCallback(async (choice: "keep" | "delete" | "move") => {
     const cur = current.current;
@@ -357,12 +426,7 @@ export function App({ config, initialPlatform, initialQuery }: Props) {
         await removeCached(platform.key, cur.rom.name);
         setStatus(`Deleted ${cur.rom.title}.`);
       } else if (choice === "move") {
-        const destDir = join(config.libraryPath, platform.key);
-        await mkdir(destDir, { recursive: true });
-        const dest = join(destDir, basename(cur.downloadedFile));
-        await Bun.write(dest, Bun.file(cur.downloadedFile));
-        await rm(cur.downloadedFile, { force: true });
-        await rm(`${cur.downloadedFile}.aria2`, { force: true });
+        const dest = await saveToLibrary(config.libraryPath, platform.key, cur.downloadedFile);
         if (cur.extractedDir) await rm(cur.extractedDir, { recursive: true, force: true });
         await dropFromManifest(platform.key, cur.rom.name);
         setStatus(`Moved to ${dest}`);
@@ -519,7 +583,7 @@ export function App({ config, initialPlatform, initialQuery }: Props) {
         <Text dimColor>{"  —  terminal ROM launcher"}</Text>
         <Box flexGrow={1} />
         <Text dimColor>{`cache ${formatBytes(cacheInfo.totalBytes)}/${config.raw.cacheMaxSizeGB}GB (${cacheInfo.count})  `}</Text>
-        <Text color={keep ? "green" : "gray"}>{keep ? "keep ✓" : "keep ✗"}</Text>
+        <Text color={keep ? "green" : "gray"}>{keep ? "library ✓" : "library ✗"}</Text>
         <Text dimColor>{`  v${VERSION}`}</Text>
       </Box>
 
@@ -609,7 +673,7 @@ export function App({ config, initialPlatform, initialQuery }: Props) {
           ) : (
             <Text>
               <Text color="yellow">[P]</Text>latform <Text color="yellow">[I]</Text>nfo{" "}
-              <Text color="yellow">[L]</Text>keep:{keep ? "on" : "off"} <Text color="yellow">[C]</Text>lear-cache{" "}
+              <Text color="yellow">[L]</Text>library:{keep ? "on" : "off"} <Text color="yellow">[C]</Text>lear-cache{" "}
               <Text color="yellow">[R]</Text>efresh <Text color="yellow">[Q]</Text>uit ·{" "}
               <Text dimColor>Tab to search</Text>
             </Text>

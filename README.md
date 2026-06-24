@@ -107,6 +107,8 @@ Then just run `emu-cli`.
 ```
 emu [search terms]        Launch the TUI, optionally pre-filling the search
 emu --platform <key>      Pre-filter to a platform (e.g. gba, snes, psx)
+emu --keep                Keep played games permanently in your library
+emu --library <dir>       Set the permanent library dir (implies --keep)
 emu --list-platforms      List supported platforms + emulator status
 emu --config              Open the config file in $EDITOR
 emu --clean               Delete the temp download folder and exit
@@ -117,6 +119,7 @@ emu --help / --version
 emu pokemon emerald
 emu --platform snes "chrono trigger"
 emu -p psx
+emu --keep --library ~/ROMs -p gba metroid     # save permanently to ~/ROMs/gba
 ```
 
 ### Keybindings
@@ -131,13 +134,14 @@ switch to command mode for the single-letter shortcuts.
 | `Tab` | Toggle between **search** and **command** mode |
 | `P` | Platform picker |
 | `I` | Info panel (size, region, emulator that will be used) |
-| `L` | Toggle keep-by-default |
+| `L` | Toggle keep-to-library (save played games permanently) |
 | `C` | Clear the index cache and refresh |
 | `R` | Refresh the current platform index |
 | `Q` / `Ctrl+C` | Quit |
 
-After you quit the emulator you're prompted: **[K]eep** (leave in temp) ·
-**[D]elete** · **[M]ove to library**.
+After you quit the emulator you're prompted: **[K]eep** (in cache) · **[D]elete** ·
+**[M]ove to library** (permanent). Games already in your library re-launch
+**instantly** and are never re-downloaded.
 
 ## Supported platforms
 
@@ -184,7 +188,8 @@ next to the game so FBNeo can boot it.
   "cdnBaseUrl": "https://cdn.minerva-archive.org",
   "seedAfterDownload": false,
   "cacheEnabled": true,
-  "cacheMaxSizeGB": 20
+  "cacheMaxSizeGB": 20,
+  "keepInLibrary": false
 }
 ```
 
@@ -193,6 +198,11 @@ next to the game so FBNeo can boot it.
 - `retroarchCorePath` — extra directory to search for RetroArch cores.
 - `cacheEnabled` / `cacheMaxSizeGB` — keep played ROMs on disk for instant replay;
   least-recently-played games are auto-evicted once the cache exceeds the cap.
+- `libraryPath` / `keepInLibrary` — a permanent home (default `~/ROMs`) for games
+  you want forever (never evicted). With `keepInLibrary` on — or `--keep` /
+  `--library <dir>` — every game you play is saved there, and anything already in
+  the library re-launches instantly. The `[L]` toggle and `[M]ove to library` do
+  the same per-game.
 - Paths use `~` and are expanded at runtime.
 
 ## Development
@@ -204,6 +214,7 @@ bun run scripts/smoke-search.ts gba pokemon    # live scrape + fuzzy search
 bun run scripts/smoke-resolve.ts               # torrent → file-index resolution
 bun run scripts/smoke-bios.ts                  # arcade game + BIOS resolution
 bun run scripts/smoke-cache.ts                 # cache record + LRU eviction
+bun run scripts/smoke-library.ts               # permanent library save + replay
 bun run scripts/smoke-tui.tsx                  # mount the Ink UI headless
 ```
 

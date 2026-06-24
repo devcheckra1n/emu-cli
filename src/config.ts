@@ -48,6 +48,8 @@ export const ConfigSchema = z.object({
   cacheEnabled: z.boolean().default(true),
   /** Cache size cap in GB; least-recently-played games are evicted over this. */
   cacheMaxSizeGB: z.number().positive().default(20),
+  /** Save played games permanently to libraryPath instead of the evictable cache. */
+  keepInLibrary: z.boolean().default(false),
 });
 
 export type PlatformOverride = z.infer<typeof PlatformOverrideSchema>;

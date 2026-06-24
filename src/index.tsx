@@ -8,7 +8,7 @@ import { render } from "ink";
 import { rm } from "node:fs/promises";
 import chalk from "chalk";
 
-import { loadConfig, configPath } from "./config.ts";
+import { loadConfig, configPath, expandHome } from "./config.ts";
 import { getPlatform, allPlatforms, platformKeys } from "./emulator/platforms.ts";
 import { detectEmulator } from "./emulator/detect.ts";
 import { findAria2c } from "./downloader/aria2c.ts";
@@ -22,6 +22,8 @@ const HELP = `${chalk.magentaBright.bold("emu")} — terminal ROM launcher (MiNE
 ${chalk.bold("USAGE")}
   emu [search terms]        Launch the TUI, optionally pre-filling the search
   emu --platform <key>      Pre-filter to a platform (e.g. gba, snes, psx)
+  emu --keep                Keep played games permanently in your library
+  emu --library <dir>       Set the permanent library dir (implies --keep)
   emu --list-platforms      List supported platforms + emulator status
   emu --config              Open the config file in $EDITOR
   emu --clean               Delete the temp download folder and exit
@@ -31,7 +33,7 @@ ${chalk.bold("USAGE")}
 ${chalk.bold("EXAMPLES")}
   emu pokemon emerald
   emu --platform snes "chrono trigger"
-  emu -p psx
+  emu --keep --library ~/ROMs -p gba "metroid"
 
 ${chalk.bold("CONFIG")}  ${chalk.dim(configPath())}
 `;
@@ -98,6 +100,8 @@ async function main(): Promise<void> {
       args: Bun.argv.slice(2),
       options: {
         platform: { type: "string", short: "p" },
+        keep: { type: "boolean", short: "k" },
+        library: { type: "string" },
         "list-platforms": { type: "boolean" },
         config: { type: "boolean" },
         clean: { type: "boolean" },
@@ -134,6 +138,11 @@ async function main(): Promise<void> {
   } catch (e) {
     fail((e as Error).message);
   }
+  if (values.library) {
+    config.libraryPath = expandHome(values.library);
+    config.raw.keepInLibrary = true;
+  }
+  if (values.keep) config.raw.keepInLibrary = true;
 
   const app = render(
     <App config={config} initialPlatform={platform} initialQuery={positionals.join(" ")} />,

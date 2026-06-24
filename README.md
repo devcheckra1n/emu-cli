@@ -68,7 +68,7 @@ sudo apt install aria2 p7zip-full retroarch mgba-qt
 ### Option A — run from source
 
 ```sh
-git clone https://github.com/<you>/emu-cli && cd emu-cli
+git clone https://github.com/devcheckra1n/emu-cli && cd emu-cli
 bun install
 bun run src/index.tsx --help     # run directly
 bun link                          # OR register `emu` + `emu-cli` on your PATH
